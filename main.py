@@ -21,11 +21,17 @@ redis_client: Optional[redis.Redis] = None
 
 if REDIS_URL:
     try:
-        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        redis_client = redis.from_url(
+            REDIS_URL, 
+            decode_responses=True,
+            socket_connect_timeout=3.0,
+            socket_timeout=3.0
+        )
         print(f"🔴 Conexão Redis configurada em: {REDIS_URL}")
     except Exception as e:
         print(f"⚠️ Erro ao inicializar Redis ({e}). Usando buffer em memória RAM.")
         redis_client = None
+
 
 # Dicionário global para controlar o buffer em memória (usado como fallback ou sem Redis)
 BUFFER_MENSAGENS: Dict[str, Dict[str, Any]] = {}
@@ -202,9 +208,9 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
 
     if not mensagens_raw:
         return
-    mensagens_raw = dados_buffer["mensagens"]
 
     # Processa áudios pendentes (via Base64 ou URL)
+
     mensagens_processadas: List[str] = []
     for msg in mensagens_raw:
         if msg.startswith("[AUDIO_BASE64:") and msg.endswith("]"):
