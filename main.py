@@ -41,6 +41,27 @@ TASKS_ATIVAS: Dict[str, asyncio.Task] = {}
 
 
 
+def decodificar_base64_seguro(b64_str: str) -> bytes:
+    """
+    Decodifica strings em Base64 com segurança, corrigindo padding (=) e caracteres URL-safe (- e _)
+    gerados pelo WhatsApp / Evolution API.
+    """
+    if not b64_str:
+        return b""
+    
+    b64_clean = re.sub(r'\s+', '', b64_str)
+    if b64_clean.startswith("data:"):
+        if "," in b64_clean:
+            b64_clean = b64_clean.split(",", 1)[1]
+            
+    b64_clean = b64_clean.replace('-', '+').replace('_', '/')
+    missing_padding = len(b64_clean) % 4
+    if missing_padding:
+        b64_clean += '=' * (4 - missing_padding)
+        
+    return base64.b64decode(b64_clean)
+
+
 def extrair_dados_mensagem(payload: dict):
     """
     Extrai remoteJid, pushName, texto ou mídias (áudio/imagem) do payload da Evolution API,
@@ -250,16 +271,14 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
             base64_para_transcrever = await obter_media_base64_evolution(msg_id)
 
         if base64_para_transcrever:
-            base64_clean = re.sub(r'\s+', '', base64_para_transcrever)
-            if base64_clean.startswith("data:"):
-                if "," in base64_clean:
-                    base64_clean = base64_clean.split(",", 1)[1]
             print(f"🎙️ Transcrevendo áudio no Whisper...")
             try:
+                audio_bytes = decodificar_base64_seguro(base64_para_transcrever)
+                
                 with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
                     temp_path = temp_audio.name
-                    audio_bytes = base64.b64decode(base64_clean)
                     temp_audio.write(audio_bytes)
+                    temp_audio.flush()
                 
                 if openai_client:
                     with open(temp_path, "rb") as audio_file:
@@ -267,8 +286,10 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
                             model="whisper-1",
                             file=audio_file
                         )
-                        msg = transcription.text
-                        print(f"🎙️ Áudio transcrito com sucesso: '{msg}'")
+                        texto_transcrito = transcription.text
+                        if texto_transcrito:
+                            msg = texto_transcrito
+                            print(f"🎙️ Áudio transcrito com sucesso: '{msg}'")
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
             except Exception as e:
