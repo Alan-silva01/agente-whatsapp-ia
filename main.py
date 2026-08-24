@@ -3,16 +3,34 @@ import uvicorn
 import httpx
 import asyncio
 import base64
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, Request, BackgroundTasks
+import redis.asyncio as redis
+from dotenv import load_dotenv
 from database import obter_ou_criar_cliente
 from agent import processar_mensagem_agente, client as openai_client
 from evolution import enviar_mensagem_whatsapp, enviar_mensagens_fracionadas_com_digitacao
 
+load_dotenv()
+
 app = FastAPI(title="Agente WhatsApp - Odonto Clínica Londrina")
 
-# Dicionário global para controlar o buffer de 15 segundos por telefone
+# Configuração do Redis (Opcional - Buffer Distribuído com fallback para RAM)
+REDIS_URL = os.getenv("REDIS_URL", "")
+redis_client: Optional[redis.Redis] = None
+
+if REDIS_URL:
+    try:
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        print(f"🔴 Conexão Redis configurada em: {REDIS_URL}")
+    except Exception as e:
+        print(f"⚠️ Erro ao inicializar Redis ({e}). Usando buffer em memória RAM.")
+        redis_client = None
+
+# Dicionário global para controlar o buffer em memória (usado como fallback ou sem Redis)
 BUFFER_MENSAGENS: Dict[str, Dict[str, Any]] = {}
+TASKS_ATIVAS: Dict[str, asyncio.Task] = {}
+
 
 
 def extrair_dados_mensagem(payload: dict):
@@ -96,30 +114,51 @@ def extrair_dados_mensagem(payload: dict):
         return None
 
 
-def adicionar_ao_buffer(dados: dict):
+async def adicionar_ao_buffer(dados: dict):
     """
-    Adiciona a mensagem recebida ao buffer de 15 segundos do telefone e reinicia o timer.
+    Adiciona a mensagem recebida ao buffer de 15 segundos do telefone (Redis com fallback em memória RAM).
     """
     telefone = dados["telefone"]
     push_name = dados["push_name"]
     texto = dados["texto"]
     
+    # Cancela timer anterior para este número se existir para renovar a janela de 15s
+    if telefone in TASKS_ATIVAS:
+        task_anterior = TASKS_ATIVAS.pop(telefone)
+        if not task_anterior.done():
+            task_anterior.cancel()
+
+    if redis_client:
+        try:
+            key_list = f"whatsapp_agent:buffer:{telefone}"
+            key_meta = f"whatsapp_agent:meta:{telefone}"
+            
+            await redis_client.rpush(key_list, texto)
+            await redis_client.expire(key_list, 300)
+            if push_name and push_name != "Desconhecido":
+                await redis_client.hset(key_meta, "push_name", push_name)
+                await redis_client.expire(key_meta, 300)
+        except Exception as e:
+            print(f"⚠️ Falha no Redis ao adicionar mensagem: {e}. Usando fallback em memória.")
+            _adicionar_memoria(telefone, push_name, texto)
+    else:
+        _adicionar_memoria(telefone, push_name, texto)
+        
+    task = asyncio.create_task(aguardar_e_processar_buffer(telefone, delay_segundos=15.0))
+    TASKS_ATIVAS[telefone] = task
+
+
+def _adicionar_memoria(telefone: str, push_name: str, texto: str):
     if telefone in BUFFER_MENSAGENS:
         info = BUFFER_MENSAGENS[telefone]
         info["mensagens"].append(texto)
         if push_name and push_name != "Desconhecido":
             info["push_name"] = push_name
-        if info.get("task"):
-            info["task"].cancel()
     else:
         BUFFER_MENSAGENS[telefone] = {
             "push_name": push_name,
-            "mensagens": [texto],
-            "task": None
+            "mensagens": [texto]
         }
-        
-    task = asyncio.create_task(aguardar_e_processar_buffer(telefone, delay_segundos=15.0))
-    BUFFER_MENSAGENS[telefone]["task"] = task
 
 
 async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.0):
@@ -133,11 +172,36 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
         # Timer cancelado pois uma nova mensagem chegou dentro dos 15 segundos
         return
 
-    dados_buffer = BUFFER_MENSAGENS.pop(telefone, None)
-    if not dados_buffer or not dados_buffer.get("mensagens"):
-        return
+    TASKS_ATIVAS.pop(telefone, None)
 
-    push_name = dados_buffer["push_name"]
+    push_name = "Desconhecido"
+    mensagens_raw: List[str] = []
+
+    if redis_client:
+        try:
+            key_list = f"whatsapp_agent:buffer:{telefone}"
+            key_meta = f"whatsapp_agent:meta:{telefone}"
+
+            mensagens_raw = await redis_client.lrange(key_list, 0, -1)
+            meta = await redis_client.hgetall(key_meta)
+            if meta and "push_name" in meta:
+                push_name = meta["push_name"]
+
+            await redis_client.delete(key_list, key_meta)
+        except Exception as e:
+            print(f"⚠️ Erro ao ler buffer no Redis ({e}). Verificando fallback em memória...")
+            dados_mem = BUFFER_MENSAGENS.pop(telefone, None)
+            if dados_mem:
+                mensagens_raw = dados_mem.get("mensagens", [])
+                push_name = dados_mem.get("push_name", "Desconhecido")
+    else:
+        dados_mem = BUFFER_MENSAGENS.pop(telefone, None)
+        if dados_mem:
+            mensagens_raw = dados_mem.get("mensagens", [])
+            push_name = dados_mem.get("push_name", "Desconhecido")
+
+    if not mensagens_raw:
+        return
     mensagens_raw = dados_buffer["mensagens"]
 
     # Processa áudios pendentes (via Base64 ou URL)
@@ -220,7 +284,7 @@ async def webhook_whatsapp(request: Request):
         dados = extrair_dados_mensagem(payload)
         
         if dados:
-            adicionar_ao_buffer(dados)
+            await adicionar_ao_buffer(dados)
             return {
                 "status": "bufferizado",
                 "mensagem": "Mensagem adicionada ao buffer de 15 segundos",
