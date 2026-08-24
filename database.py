@@ -216,13 +216,18 @@ def pausar_agente(telefone: str, minutos: int = 5) -> bool:
         return True
         
     try:
+        telefone_limpo = str(telefone).split("@")[0].strip()
+        # Garante que a linha do cliente existe na tabela clientes antes de atualizar
+        obter_ou_criar_cliente(telefone=telefone_limpo)
+        
         pausado_ate_iso = (datetime.now(timezone.utc) + timedelta(minutes=minutos)).isoformat()
-        supabase.table("clientes").update({"pausado_ate": pausado_ate_iso}).eq("telefone", telefone).execute()
-        print(f"⏸️ IA PAUSADA por {minutos} min para {telefone} (Até {pausado_ate_iso})")
+        supabase.table("clientes").update({"pausado_ate": pausado_ate_iso}).eq("telefone", telefone_limpo).execute()
+        print(f"⏸️ IA PAUSADA por {minutos} min para {telefone_limpo} (Até {pausado_ate_iso})")
         return True
     except Exception as e:
         print(f"❌ Erro ao pausar agente no Supabase: {e}")
         return False
+
 
 def agente_esta_pausado(telefone: str) -> bool:
     """
