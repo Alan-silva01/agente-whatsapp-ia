@@ -120,62 +120,73 @@ def remover_base64_para_banco(texto: str) -> str:
         caption = ""
         if "|CAPTION:" in corpo:
             _, caption = corpo.split("|CAPTION:", 1)
+        caption = caption.strip()
         return f"[Foto enviada pelo paciente. Legenda: {caption}]" if caption else "[Foto enviada pelo paciente]"
 
-    texto = re.sub(r'\[IMAGE_BASE64:(.*?)\]', sub_img, texto)
-    texto = re.sub(r'\[IMAGE_URL:(.*?)\]', sub_img, texto)
-    return texto
+    texto = re.sub(r'\[IMAGE_BASE64:(.*?)\]', sub_img, texto, flags=re.DOTALL)
+    texto = re.sub(r'\[IMAGE_URL:(.*?)\]', sub_img, texto, flags=re.DOTALL)
+    return texto.strip()
 
 
 def formatar_conteudo_multimodal(texto: str) -> Any:
     """
     Formata mensagens com imagem para o padrão de Visão Computacional (Multimodal) da OpenAI.
+    Utiliza regex com re.DOTALL para extrair Base64/URL sem quebrar com quebras de linha.
     """
     if not texto or ("[IMAGE_BASE64:" not in texto and "[IMAGE_URL:" not in texto):
         return texto
 
+    import re
     partes_conteudo: List[Dict[str, Any]] = []
-    linhas_texto: List[str] = []
 
-    for linha in texto.split("\n"):
-        linha_str = linha.strip()
-        if linha_str.startswith("[IMAGE_BASE64:") and linha_str.endswith("]"):
-            corpo = linha_str[14:-1]
-            caption = ""
-            if "|CAPTION:" in corpo:
-                base64_data, caption = corpo.split("|CAPTION:", 1)
-            else:
-                base64_data = corpo
+    # 1. Procura por IMAGE_BASE64
+    pattern_b64 = re.compile(r'\[IMAGE_BASE64:(.*?)\]', re.DOTALL)
+    matches_b64 = pattern_b64.findall(texto)
 
-            url_formatada = base64_data if base64_data.startswith("data:") else f"data:image/jpeg;base64,{base64_data}"
+    for match in matches_b64:
+        corpo = match.strip()
+        caption = ""
+        if "|CAPTION:" in corpo:
+            base64_data, caption = corpo.split("|CAPTION:", 1)
+        else:
+            base64_data = corpo
+
+        # Limpa quebras de linha/espaços da string base64
+        base64_clean = re.sub(r'\s+', '', base64_data)
+        if base64_clean:
+            url_formatada = base64_clean if base64_clean.startswith("data:") else f"data:image/jpeg;base64,{base64_clean}"
             partes_conteudo.append({
                 "type": "image_url",
                 "image_url": {"url": url_formatada}
             })
-            if caption:
-                linhas_texto.append(f"[Legenda da foto: {caption}]")
 
-        elif linha_str.startswith("[IMAGE_URL:") and linha_str.endswith("]"):
-            corpo = linha_str[11:-1]
-            caption = ""
-            if "|CAPTION:" in corpo:
-                img_url, caption = corpo.split("|CAPTION:", 1)
-            else:
-                img_url = corpo
+    # 2. Procura por IMAGE_URL
+    pattern_url = re.compile(r'\[IMAGE_URL:(.*?)\]', re.DOTALL)
+    matches_url = pattern_url.findall(texto)
 
+    for match in matches_url:
+        corpo = match.strip()
+        caption = ""
+        if "|CAPTION:" in corpo:
+            img_url, caption = corpo.split("|CAPTION:", 1)
+        else:
+            img_url = corpo
+
+        img_url_clean = img_url.strip()
+        if img_url_clean:
             partes_conteudo.append({
                 "type": "image_url",
-                "image_url": {"url": img_url}
+                "image_url": {"url": img_url_clean}
             })
-            if caption:
-                linhas_texto.append(f"[Legenda da foto: {caption}]")
-        else:
-            if linha_str:
-                linhas_texto.append(linha_str)
 
-    texto_final = "\n".join(linhas_texto) if linhas_texto else "O paciente enviou uma foto para você visualizar."
-    partes_conteudo.insert(0, {"type": "text", "text": texto_final})
+    # 3. Limpa o texto (substitui as tags das imagens por texto amigável)
+    texto_limpo = remover_base64_para_banco(texto)
+    if not texto_limpo:
+        texto_limpo = "O paciente enviou uma foto para você visualizar."
+
+    partes_conteudo.insert(0, {"type": "text", "text": texto_limpo})
     return partes_conteudo
+
 
 
 async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str) -> str:
