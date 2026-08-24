@@ -11,7 +11,45 @@ EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
 EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
 
+async def obter_media_base64_evolution(message_id: str) -> Optional[str]:
+    """
+    Busca o conteúdo Base64 de uma mídia (áudio ou imagem) na Evolution API usando a rota /chat/findMediaBase64.
+    """
+    if not EVOLUTION_API_URL or not EVOLUTION_API_KEY or not EVOLUTION_INSTANCE or not message_id:
+        return None
+        
+    url = f"{EVOLUTION_API_URL}/chat/findMediaBase64/{EVOLUTION_INSTANCE}"
+    headers = {
+        "apikey": EVOLUTION_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "message": {
+            "key": {
+                "id": message_id
+            }
+        },
+        "convertToMp4": False
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(url, headers=headers, json=payload)
+            if res.status_code in [200, 201]:
+                dados = res.json()
+                b64 = dados.get("base64") or dados.get("media")
+                if b64:
+                    print(f"✅ Mídia recuperada com sucesso da Evolution API para mensagem {message_id}")
+                    return b64
+            print(f"⚠️ Evolution API findMediaBase64 retornou status {res.status_code} para {message_id}")
+    except Exception as e:
+        print(f"❌ Erro ao buscar mídia na Evolution API ({message_id}): {e}")
+        
+    return None
+
+
 async def enviar_presenca_whatsapp(telefone: str, presenca: str = "composing", delay_ms: int = 1200) -> bool:
+
     """
     Envia o status de presença (ex: 'composing' para digitando...) via Evolution API.
     """

@@ -11,7 +11,7 @@ import redis.asyncio as redis
 from dotenv import load_dotenv
 from database import obter_ou_criar_cliente
 from agent import processar_mensagem_agente, client as openai_client
-from evolution import enviar_mensagem_whatsapp, enviar_mensagens_fracionadas_com_digitacao
+from evolution import enviar_mensagem_whatsapp, enviar_mensagens_fracionadas_com_digitacao, obter_media_base64_evolution, EVOLUTION_API_KEY
 
 load_dotenv()
 
@@ -49,6 +49,7 @@ def extrair_dados_mensagem(payload: dict):
     try:
         data = payload.get("data", payload)
         key = data.get("key", {})
+        message_id = key.get("id", "")
         
         from_me = key.get("fromMe", False)
         remote_jid = key.get("remoteJid", "")
@@ -61,8 +62,15 @@ def extrair_dados_mensagem(payload: dict):
         telefone = remote_jid.split("@")[0]
         push_name = data.get("pushName", "Desconhecido")
         
-        # Extrai o texto ou mídias da mensagem
+        # Extrai o texto ou mídias da mensagem (desembrulha se for efêmera/viewOnce)
         message_obj = data.get("message", {})
+        if "ephemeralMessage" in message_obj:
+            message_obj = message_obj["ephemeralMessage"].get("message", {})
+        elif "viewOnceMessage" in message_obj:
+            message_obj = message_obj["viewOnceMessage"].get("message", {})
+        elif "documentWithCaptionMessage" in message_obj:
+            message_obj = message_obj["documentWithCaptionMessage"].get("message", {})
+
         texto = ""
         
         if "conversation" in message_obj:
@@ -77,6 +85,8 @@ def extrair_dados_mensagem(payload: dict):
             
             if base64_str:
                 texto = f"[IMAGE_BASE64:{base64_str}|CAPTION:{caption}]"
+            elif message_id:
+                texto = f"[IMAGE_ID:{message_id}|CAPTION:{caption}]"
             elif image_url:
                 texto = f"[IMAGE_URL:{image_url}|CAPTION:{caption}]"
             else:
@@ -85,9 +95,11 @@ def extrair_dados_mensagem(payload: dict):
         elif "audioMessage" in message_obj:
             audio_obj = message_obj["audioMessage"]
             base64_str = audio_obj.get("base64") or data.get("base64") or message_obj.get("base64")
-            audio_url = audio_obj.get("url")
+            audio_url = audio_obj.get("url") or audio_obj.get("directPath")
             if base64_str:
                 texto = f"[AUDIO_BASE64:{base64_str}]"
+            elif message_id:
+                texto = f"[AUDIO_ID:{message_id}]"
             elif audio_url:
                 texto = f"[AUDIO_URL:{audio_url}]"
             else:
@@ -221,16 +233,28 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
     if not mensagens_raw:
         return
 
-    # Processa áudios pendentes (via Base64 ou URL) com regex robusto
+    # Processa áudios pendentes (via Base64, ID da Evolution API ou URL)
     mensagens_processadas: List[str] = []
     for msg in mensagens_raw:
         match_b64 = re.search(r'\[AUDIO_BASE64:(.*?)\]', msg, re.DOTALL)
+        match_id = re.search(r'\[AUDIO_ID:(.*?)\]', msg, re.DOTALL)
         match_url = re.search(r'\[AUDIO_URL:(.*?)\]', msg, re.DOTALL)
 
+        base64_para_transcrever = None
+
         if match_b64:
-            base64_data = match_b64.group(1).strip()
-            base64_clean = re.sub(r'\s+', '', base64_data)
-            print(f"🎙️ Transcrevendo áudio via Base64 no Whisper...")
+            base64_para_transcrever = match_b64.group(1).strip()
+        elif match_id:
+            msg_id = match_id.group(1).strip()
+            print(f"🎙️ Buscando áudio {msg_id} na Evolution API via findMediaBase64...")
+            base64_para_transcrever = await obter_media_base64_evolution(msg_id)
+
+        if base64_para_transcrever:
+            base64_clean = re.sub(r'\s+', '', base64_para_transcrever)
+            if base64_clean.startswith("data:"):
+                if "," in base64_clean:
+                    base64_clean = base64_clean.split(",", 1)[1]
+            print(f"🎙️ Transcrevendo áudio no Whisper...")
             try:
                 with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
                     temp_path = temp_audio.name
@@ -253,10 +277,11 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
 
         elif match_url:
             audio_url = match_url.group(1).strip()
-            print(f"🎙️ Baixando áudio para transcrição no Whisper: {audio_url}")
+            print(f"🎙️ Baixando áudio com apikey para transcrição no Whisper: {audio_url}")
+            headers = {"apikey": EVOLUTION_API_KEY} if EVOLUTION_API_KEY else {}
             try:
                 async with httpx.AsyncClient(timeout=15.0) as http_client:
-                    res = await http_client.get(audio_url)
+                    res = await http_client.get(audio_url, headers=headers)
                     if res.status_code == 200:
                         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
                             temp_path = temp_audio.name
@@ -282,6 +307,24 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
         texto_final = mensagens_processadas[0]
     else:
         texto_final = "\n".join(mensagens_processadas)
+
+    # Se houver IMAGE_ID nas mensagens, busca o base64 da foto na Evolution API antes de chamar a IA
+    if "[IMAGE_ID:" in texto_final:
+        pattern_img_id = re.compile(r'\[IMAGE_ID:(.*?)\]', re.DOTALL)
+        matches = pattern_img_id.findall(texto_final)
+        for match in matches:
+            corpo = match.strip()
+            caption = ""
+            if "|CAPTION:" in corpo:
+                msg_id, caption = corpo.split("|CAPTION:", 1)
+            else:
+                msg_id = corpo
+            
+            print(f"📸 Buscando foto {msg_id} na Evolution API via findMediaBase64...")
+            b64_img = await obter_media_base64_evolution(msg_id)
+            if b64_img:
+                texto_final = texto_final.replace(f"[IMAGE_ID:{corpo}]", f"[IMAGE_BASE64:{b64_img}|CAPTION:{caption}]")
+
 
     print(f"\n📩 [BUFFER 15s EXSPIRADO] Processando {len(mensagens_processadas)} mensagem(ns) agrupada(s) de {telefone} ({push_name}):\n'{texto_final}'")
 
