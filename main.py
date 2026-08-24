@@ -2,6 +2,7 @@ import os
 import uvicorn
 import httpx
 import asyncio
+import base64
 from typing import Dict, Any, List
 from fastapi import FastAPI, Request, BackgroundTasks
 from database import obter_ou_criar_cliente
@@ -46,8 +47,12 @@ def extrair_dados_mensagem(payload: dict):
             caption = message_obj["imageMessage"].get("caption", "")
             texto = f"[O paciente enviou uma imagem/foto. Legenda: {caption}]" if caption else "[O paciente enviou uma foto/imagem para avaliação]"
         elif "audioMessage" in message_obj:
-            audio_url = message_obj["audioMessage"].get("url")
-            if audio_url:
+            audio_obj = message_obj["audioMessage"]
+            base64_str = audio_obj.get("base64") or data.get("base64") or message_obj.get("base64")
+            audio_url = audio_obj.get("url")
+            if base64_str:
+                texto = f"[AUDIO_BASE64:{base64_str}]"
+            elif audio_url:
                 texto = f"[AUDIO_URL:{audio_url}]"
             else:
                 texto = "[O paciente enviou um áudio de voz]"
@@ -135,10 +140,33 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
     push_name = dados_buffer["push_name"]
     mensagens_raw = dados_buffer["mensagens"]
 
-    # Processa áudios pendentes
+    # Processa áudios pendentes (via Base64 ou URL)
     mensagens_processadas: List[str] = []
     for msg in mensagens_raw:
-        if msg.startswith("[AUDIO_URL:") and msg.endswith("]"):
+        if msg.startswith("[AUDIO_BASE64:") and msg.endswith("]"):
+            base64_data = msg[14:-1]
+            print(f"🎙️ Transcrevendo áudio via Base64 no Whisper...")
+            try:
+                temp_path = f"/tmp/audio_{telefone}.ogg"
+                audio_bytes = base64.b64decode(base64_data)
+                with open(temp_path, "wb") as f:
+                    f.write(audio_bytes)
+                
+                if openai_client:
+                    with open(temp_path, "rb") as audio_file:
+                        transcription = openai_client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=audio_file
+                        )
+                        msg = transcription.text
+                        print(f"🎙️ Áudio transcrito com sucesso: '{msg}'")
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception as e:
+                print(f"❌ Erro ao transcrever áudio em Base64: {e}")
+                msg = "[Áudio do paciente que não pôde ser transcrito com clareza]"
+
+        elif msg.startswith("[AUDIO_URL:") and msg.endswith("]"):
             audio_url = msg[11:-1]
             print(f"🎙️ Baixando áudio para transcrição no Whisper: {audio_url}")
             try:
@@ -179,6 +207,7 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
 
     # 3. Envia resposta fracionada em mensagens curtas com status "digitando..."
     await enviar_mensagens_fracionadas_com_digitacao(telefone=telefone, texto=resposta_agente)
+
 
 
 @app.post("/webhook")
