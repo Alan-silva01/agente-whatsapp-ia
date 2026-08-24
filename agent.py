@@ -93,7 +93,6 @@ def remover_emojis(texto: str) -> str:
     if not texto:
         return ""
     import re
-    # Expressão regular para remover emojis e símbolos pictográficos
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"  # emoticons
@@ -107,9 +106,81 @@ def remover_emojis(texto: str) -> str:
     )
     return emoji_pattern.sub('', texto)
 
+
+def remover_base64_para_banco(texto: str) -> str:
+    """
+    Substitui strings de imagem em Base64/URL por descrições amigáveis no histórico do Supabase.
+    """
+    if not texto:
+        return ""
+    import re
+
+    def sub_img(match):
+        corpo = match.group(1)
+        caption = ""
+        if "|CAPTION:" in corpo:
+            _, caption = corpo.split("|CAPTION:", 1)
+        return f"[Foto enviada pelo paciente. Legenda: {caption}]" if caption else "[Foto enviada pelo paciente]"
+
+    texto = re.sub(r'\[IMAGE_BASE64:(.*?)\]', sub_img, texto)
+    texto = re.sub(r'\[IMAGE_URL:(.*?)\]', sub_img, texto)
+    return texto
+
+
+def formatar_conteudo_multimodal(texto: str) -> Any:
+    """
+    Formata mensagens com imagem para o padrão de Visão Computacional (Multimodal) da OpenAI.
+    """
+    if not texto or ("[IMAGE_BASE64:" not in texto and "[IMAGE_URL:" not in texto):
+        return texto
+
+    partes_conteudo: List[Dict[str, Any]] = []
+    linhas_texto: List[str] = []
+
+    for linha in texto.split("\n"):
+        linha_str = linha.strip()
+        if linha_str.startswith("[IMAGE_BASE64:") and linha_str.endswith("]"):
+            corpo = linha_str[14:-1]
+            caption = ""
+            if "|CAPTION:" in corpo:
+                base64_data, caption = corpo.split("|CAPTION:", 1)
+            else:
+                base64_data = corpo
+
+            url_formatada = base64_data if base64_data.startswith("data:") else f"data:image/jpeg;base64,{base64_data}"
+            partes_conteudo.append({
+                "type": "image_url",
+                "image_url": {"url": url_formatada}
+            })
+            if caption:
+                linhas_texto.append(f"[Legenda da foto: {caption}]")
+
+        elif linha_str.startswith("[IMAGE_URL:") and linha_str.endswith("]"):
+            corpo = linha_str[11:-1]
+            caption = ""
+            if "|CAPTION:" in corpo:
+                img_url, caption = corpo.split("|CAPTION:", 1)
+            else:
+                img_url = corpo
+
+            partes_conteudo.append({
+                "type": "image_url",
+                "image_url": {"url": img_url}
+            })
+            if caption:
+                linhas_texto.append(f"[Legenda da foto: {caption}]")
+        else:
+            if linha_str:
+                linhas_texto.append(linha_str)
+
+    texto_final = "\n".join(linhas_texto) if linhas_texto else "O paciente enviou uma foto para você visualizar."
+    partes_conteudo.insert(0, {"type": "text", "text": texto_final})
+    return partes_conteudo
+
+
 async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str) -> str:
     """
-    Processa a mensagem com o prompt oficial da Bianca (Odonto Clínica Londrina) + Supabase Tools.
+    Processa a mensagem com o prompt oficial da Bianca (Odonto Clínica Londrina) + Supabase Tools + Visão GPT-4o-mini.
     """
     telefone = str(cliente.get("telefone", ""))
     push_name = str(cliente.get("push_name", "Desconhecido"))
@@ -121,7 +192,9 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
     if not client:
         return "OPENAI_API_KEY não configurada no arquivo .env!"
 
-    salvar_mensagem(telefone, "user", texto_usuario)
+    # Salva mensagem tratada no Supabase (sem a base64 gigante)
+    texto_limpo_banco = remover_base64_para_banco(texto_usuario)
+    salvar_mensagem(telefone, "user", texto_limpo_banco)
     historico = carregar_historico(telefone, limite=12)
 
     agora_iso = datetime.now().isoformat()
@@ -147,6 +220,11 @@ Esta regra é ABSOLUTA e INVIOLÁVEL.
 ## IDENTIDADE E DESCRIÇÃO
 Você é a Bianca, atendente da Odonto Clínica Londrina. NUNCA diga que é assistente virtual, robô, IA ou qualquer coisa do tipo. Você é simplesmente a Bianca, atendente da clínica.
 SEMPRE fale no FEMININO: "tô ótima", "obrigada", "animada".
+
+## CAPACIDADE DE VISÃO E FOTOS RECEBIDAS
+Você tem capacidade de visão e CONSEGUE VER AS FOTOS E IMAGENS enviadas pelo paciente.
+- Quando o paciente enviar uma foto (dentes, sorriso, aparelho, exame ou documento), comente naturalmente que você viu o conteúdo da foto (ex: "Recebi sua foto aqui! Vejo que...").
+- REGRA DE SEGURANÇA ÉTICA E MÉDICA ABSOLUTA: NUNCA, EM HIPÓTESE ALGUMA, DÊ DIAGNÓSTICOS MÉDICOS OU ODONTOLÓGICOS por foto. Diga sempre que a foto já ficou salva no sistema para a Dra. Karen (ou Dra. Karine) avaliar presencialmente na consulta de avaliação.
 
 ## HORÁRIO DE FUNCIONAMENTO DA CLÍNICA
 - Segunda a Sexta: 8h às 18h
@@ -189,6 +267,12 @@ SEMPRE valide se o horário solicitado está dentro do funcionamento. Se não es
     messages: List[Any] = [{"role": "system", "content": system_prompt}]
     for msg in historico:
         messages.append({"role": msg["role"], "content": msg["content"]})
+
+    # Se a mensagem atual do usuário contiver marcadores de imagem, injeta no último item (user)
+    if "[IMAGE_BASE64:" in texto_usuario or "[IMAGE_URL:" in texto_usuario:
+        if messages and messages[-1]["role"] == "user":
+            messages[-1]["content"] = formatar_conteudo_multimodal(texto_usuario)
+
 
     print(f"🧠 Enviando prompt da Bianca para GPT-4o-mini ({telefone})...")
     try:

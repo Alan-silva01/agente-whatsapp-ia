@@ -68,8 +68,18 @@ def extrair_dados_mensagem(payload: dict):
         elif "extendedTextMessage" in message_obj:
             texto = message_obj["extendedTextMessage"].get("text", "")
         elif "imageMessage" in message_obj:
-            caption = message_obj["imageMessage"].get("caption", "")
-            texto = f"[O paciente enviou uma imagem/foto. Legenda: {caption}]" if caption else "[O paciente enviou uma foto/imagem para avaliação]"
+            img_obj = message_obj["imageMessage"]
+            caption = img_obj.get("caption", "")
+            base64_str = img_obj.get("base64") or data.get("base64") or message_obj.get("base64")
+            image_url = img_obj.get("url")
+            
+            if base64_str:
+                texto = f"[IMAGE_BASE64:{base64_str}|CAPTION:{caption}]"
+            elif image_url:
+                texto = f"[IMAGE_URL:{image_url}|CAPTION:{caption}]"
+            else:
+                texto = f"[O paciente enviou uma imagem/foto. Legenda: {caption}]" if caption else "[O paciente enviou uma foto/imagem para avaliação]"
+
         elif "audioMessage" in message_obj:
             audio_obj = message_obj["audioMessage"]
             base64_str = audio_obj.get("base64") or data.get("base64") or message_obj.get("base64")
