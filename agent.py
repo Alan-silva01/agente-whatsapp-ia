@@ -10,8 +10,11 @@ from database import (
     criar_agendamento,
     cancelar_ou_reagendar_agendamento,
     salvar_mensagem,
-    carregar_historico
+    carregar_historico,
+    pausar_agente
 )
+from prompts.bianca_prompt import obter_system_prompt_bianca
+from tools.clinic_tools import TOOLS
 
 load_dotenv()
 
@@ -20,73 +23,6 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 client: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# Ferramentas Nativas do Supabase para a IA
-TOOLS: List[Any] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "atualizar_cadastro_paciente",
-            "description": "Atualiza os dados cadastrais do paciente (nome completo, email, cpf, serviço de interesse) no banco de dados Supabase.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "nome_real": {"type": "string", "description": "Nome completo do paciente"},
-                    "email": {"type": "string", "description": "E-mail do paciente"},
-                    "cpf": {"type": "string", "description": "CPF do paciente (mantendo zeros como texto)"},
-                    "servico_interesse": {"type": "string", "description": "Serviço que o paciente quer (ex: clareamento, implante, avaliação)"}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "consultar_disponibilidade",
-            "description": "Consulta se uma data e horário estão disponíveis para agendamento no banco de dados.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "data_hora_iso": {"type": "string", "description": "Data e hora ISO (ex: 2026-08-25T14:00:00)"},
-                    "profissional": {"type": "string", "description": "Nome do profissional se específico (ex: Dra. Karen, Dra. Karine)"}
-                },
-                "required": ["data_hora_iso"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "agendar_consulta",
-            "description": "Grava uma consulta agendada na tabela de agendamentos do Supabase.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "nome_paciente": {"type": "string", "description": "Nome do paciente"},
-                    "servico": {"type": "string", "description": "Serviço agendado"},
-                    "profissional": {"type": "string", "description": "Profissional responsável"},
-                    "data_hora_iso": {"type": "string", "description": "Data e hora ISO da consulta"}
-                },
-                "required": ["nome_paciente", "servico", "data_hora_iso"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cancelar_ou_reagendar_consulta",
-            "description": "Cancela ou remarca uma consulta existente do paciente no Supabase.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "acao": {"type": "string", "enum": ["cancelar", "reagendar"], "description": "Ação a ser executada"},
-                    "nova_data_hora_iso": {"type": "string", "description": "Nova data/hora ISO em caso de reagendamento"},
-                    "motivo": {"type": "string", "description": "Motivo do cancelamento ou remarcação se informado"}
-                },
-                "required": ["acao"]
-            }
-        }
-    }
-]
 
 def remover_emojis(texto: str) -> str:
     """Garante que nenhum emoji passe nas respostas da Bianca."""
@@ -188,7 +124,6 @@ def formatar_conteudo_multimodal(texto: str) -> Any:
     return partes_conteudo
 
 
-
 async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str) -> str:
     """
     Processa a mensagem com o prompt oficial da Bianca (Odonto Clínica Londrina) + Supabase Tools + Visão GPT-4o-mini.
@@ -209,71 +144,10 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
     historico = carregar_historico(telefone, limite=12)
 
     agora_iso = datetime.now().isoformat()
-    
-    # Formatação das tags dinâmicas
     dados_cliente_str = f"Nome: {nome_real or 'SEM CADASTRO'}, Email: {email or 'SEM EMAIL'}, CPF: {cpf or 'SEM CPF'}, Serviço: {servico_interesse or 'Nenhum'}" if (nome_real or email or cpf) else "SEM CADASTRO"
 
-    system_prompt = f"""# Prompt para Agente de IA da Odonto Clínica Londrina
-
-<dataEHoraAtual>{agora_iso}</dataEHoraAtual>
-<whatsApp>{telefone}</whatsApp>
-<dados_cliente>{dados_cliente_str}</dados_cliente>
-
----
-## REGRA CRÍTICA - LEIA PRIMEIRO
-
-NUNCA, EM HIPÓTESE ALGUMA, USE EMOJIS NAS SUAS RESPOSTAS.
-Você NÃO pode usar qualquer emoji. Apenas texto puro. Emojis fazem você parecer robô e artificial.
-Esta regra é ABSOLUTA e INVIOLÁVEL.
-
----
-
-## IDENTIDADE E DESCRIÇÃO
-Você é a Bianca, atendente da Odonto Clínica Londrina. NUNCA diga que é assistente virtual, robô, IA ou qualquer coisa do tipo. Você é simplesmente a Bianca, atendente da clínica.
-SEMPRE fale no FEMININO: "tô ótima", "obrigada", "animada".
-
-## CAPACIDADE DE VISÃO E FOTOS RECEBIDAS
-Você tem capacidade de visão e CONSEGUE VER AS FOTOS E IMAGENS enviadas pelo paciente.
-- Quando o paciente enviar uma foto (dentes, sorriso, aparelho, exame ou documento), comente naturalmente que você viu o conteúdo da foto (ex: "Recebi sua foto aqui! Vejo que...").
-- REGRA DE SEGURANÇA ÉTICA E MÉDICA ABSOLUTA: NUNCA, EM HIPÓTESE ALGUMA, DÊ DIAGNÓSTICOS MÉDICOS OU ODONTOLÓGICOS por foto. Diga sempre que a foto já ficou salva no sistema para a Dra. Karen (ou Dra. Karine) avaliar presencialmente na consulta de avaliação.
-
-## HORÁRIO DE FUNCIONAMENTO DA CLÍNICA
-- Segunda a Sexta: 8h às 18h
-- Sábado e Domingo: Fechado
-
-SEMPRE valide se o horário solicitado está dentro do funcionamento. Se não estiver: "Esse horário a clínica tá fechada. Atendemos seg-sex 8h-18h e sábado e domingo não abrimos. Qual outro horário fica bom pra você?"
-
-## FERRAMENTAS DO SUPABASE DISPONÍVEIS
-- `consultar_disponibilidade`: usa para checar se o horário está livre na agenda da clínica.
-- `agendar_consulta`: usa para gravar a consulta agendada do paciente.
-- `cancelar_ou_reagendar_consulta`: usa para cancelar ou mudar a data da consulta.
-- `atualizar_cadastro_paciente`: usa para salvar nome, email, cpf e serviço de interesse do paciente.
-
-## REGRAS DE CONVERSAÇÃO NATURAL
-1. Respostas curtíssimas - Primeiras mensagens máximo 5-7 palavras.
-2. Fale como gente - "Ah entendi", "Beleza", "Pois é".
-3. UMA PERGUNTA POR VEZ. Espere a resposta.
-4. ABSOLUTAMENTE ZERO EMOJIS.
-5. Se o cliente disser sobre qual procedimento quer (implante, clareamento, canal, etc), FALE E RESPONDA DIRETAMENTE SOBRE ELE. NUNCA faça perguntas genéricas quando ele já especificou o que busca.
-6. Sempre que coletar nome, email, cpf ou novo serviço de interesse, chame a ferramenta `atualizar_cadastro_paciente`.
-7. Se a mensagem contiver citações [Em resposta à mensagem...] ou múltiplas perguntas agrupadas, responda diretamente a todos os pontos de forma clara, natural e humana.
-
-
-## VALORES E SERVIÇOS
-- Consulta de Avaliação: R$ 50 (GRÁTIS se for a 1ª vez / novos clientes)
-- Emergência: R$ 150
-- Consulta Especialista: R$ 180
-- Limpeza: R$ 150
-- Clareamento: R$ 900
-- Canal: R$ 1200
-- Extração Siso: R$ 450
-- Restauração: R$ 180
-- Implante: R$ 2500
-
-## PROFISSIONAIS DA CLÍNICA
-- Dra. Karen (Clínico Geral e Ortodontia - aparelhos/alinhadores)
-- Dra. Karine (Endodontia - canal)
-"""
+    # Carrega prompt limpo do módulo prompts
+    system_prompt = obter_system_prompt_bianca(agora_iso, telefone, dados_cliente_str)
 
     messages: List[Any] = [{"role": "system", "content": system_prompt}]
     for msg in historico:
@@ -283,7 +157,6 @@ SEMPRE valide se o horário solicitado está dentro do funcionamento. Se não es
     if "[IMAGE_BASE64:" in texto_usuario or "[IMAGE_URL:" in texto_usuario:
         if messages and messages[-1]["role"] == "user":
             messages[-1]["content"] = formatar_conteudo_multimodal(texto_usuario)
-
 
     print(f"🧠 Enviando prompt da Bianca para GPT-4o-mini ({telefone})...")
     try:
@@ -341,6 +214,13 @@ SEMPRE valide se o horário solicitado está dentro do funcionamento. Se não es
                         motivo=args.get("motivo")
                     )
 
+                elif fn_name == "solicitar_atendimento_humano":
+                    pausar_agente(telefone, minutos=5)
+                    resultado = {
+                        "status": "sucesso",
+                        "mensagem": "Atendimento transferido para humano e a IA foi pausada por 5 minutos."
+                    }
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -365,3 +245,4 @@ SEMPRE valide se o horário solicitado está dentro do funcionamento. Se não es
     except Exception as e:
         print(f"❌ Erro na OpenAI API: {e}")
         return "Tive um probleminha técnico por um momento. Pode repetir por favor?"
+

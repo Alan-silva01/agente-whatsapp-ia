@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, Request, BackgroundTasks
 import redis.asyncio as redis
 from dotenv import load_dotenv
-from database import obter_ou_criar_cliente
+from database import obter_ou_criar_cliente, pausar_agente, agente_esta_pausado
 from agent import processar_mensagem_agente, client as openai_client
 from evolution import enviar_mensagem_whatsapp, enviar_mensagens_fracionadas_com_digitacao, obter_media_base64_evolution, EVOLUTION_API_KEY
 
@@ -75,13 +75,20 @@ def extrair_dados_mensagem(payload: dict):
         from_me = key.get("fromMe", False)
         remote_jid = key.get("remoteJid", "")
         
-        # Ignora mensagens enviadas pelo próprio robô ou de grupos
-        if from_me or not remote_jid or "@g.us" in remote_jid:
+        # Ignora mensagens de grupos ou sem remetente
+        if not remote_jid or "@g.us" in remote_jid:
             return None
         
         # Limpa o número de telefone (remove @s.whatsapp.net)
         telefone = remote_jid.split("@")[0]
         push_name = data.get("pushName", "Desconhecido")
+
+        # Se a mensagem foi enviada pelo próprio atendente humano (WhatsApp Web/Celular da clínica)
+        if from_me:
+            if telefone:
+                pausar_agente(telefone, minutos=5)
+                print(f"🛑 Mensagem enviada pelo atendente humano (fromMe=True) para {telefone}. IA pausada por 5 minutos.")
+            return None
         
         # Extrai o texto ou mídias da mensagem (desembrulha se for efêmera/viewOnce)
         message_obj = data.get("message", {})
@@ -167,12 +174,17 @@ def extrair_dados_mensagem(payload: dict):
 
 async def adicionar_ao_buffer(dados: dict):
     """
-    Adiciona a mensagem recebida ao buffer de 15 segundos do telefone (Redis com fallback em memória RAM).
+    Adiciona a mensagem recebida ao buffer de 15 segundos do telefone (se o atendimento da IA não estiver pausado).
     """
     telefone = dados["telefone"]
     push_name = dados["push_name"]
     texto = dados["texto"]
     
+    # Checa se a IA está pausada para este número (atendimento humano ativo)
+    if agente_esta_pausado(telefone):
+        print(f"⏸️ Mensagem de {telefone} ignorada pela IA pois o atendimento humano está ativo (pausa 5 min).")
+        return
+
     # Cancela timer anterior para este número se existir para renovar a janela de 15s
     if telefone in TASKS_ATIVAS:
         task_anterior = TASKS_ATIVAS.pop(telefone)

@@ -1,7 +1,9 @@
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
 
 load_dotenv()
 
@@ -205,3 +207,45 @@ def carregar_historico(telefone: str, limite: int = 10) -> List[Dict[str, str]]:
     except Exception as e:
         print(f"❌ Erro ao carregar histórico: {e}")
         return []
+
+def pausar_agente(telefone: str, minutos: int = 5) -> bool:
+    """
+    Pausa o atendimento da IA por N minutos para um determinado número no Supabase.
+    """
+    if not supabase or not telefone:
+        return True
+        
+    try:
+        pausado_ate_iso = (datetime.now(timezone.utc) + timedelta(minutes=minutos)).isoformat()
+        supabase.table("clientes").update({"pausado_ate": pausado_ate_iso}).eq("telefone", telefone).execute()
+        print(f"⏸️ IA PAUSADA por {minutos} min para {telefone} (Até {pausado_ate_iso})")
+        return True
+    except Exception as e:
+        print(f"❌ Erro ao pausar agente no Supabase: {e}")
+        return False
+
+def agente_esta_pausado(telefone: str) -> bool:
+    """
+    Verifica se a IA está pausada para o número informado no Supabase (se agora < pausado_ate).
+    """
+    if not supabase or not telefone:
+        return False
+        
+    try:
+        res = supabase.table("clientes").select("pausado_ate").eq("telefone", telefone).execute()
+        if res.data and isinstance(res.data, list) and len(res.data) > 0:
+            cliente = res.data[0]
+            if isinstance(cliente, dict):
+                pausado_ate_str = cliente.get("pausado_ate")
+                if pausado_ate_str:
+                    pausado_ate_dt = datetime.fromisoformat(pausado_ate_str.replace("Z", "+00:00"))
+                    agora_dt = datetime.now(timezone.utc)
+                    if agora_dt < pausado_ate_dt:
+                        restante_seg = int((pausado_ate_dt - agora_dt).total_seconds())
+                        print(f"⏸️ Atendimento IA pausado para {telefone} (restam {restante_seg}s)")
+                        return True
+        return False
+    except Exception as e:
+        print(f"⚠️ Erro ao checar status de pausa no Supabase: {e}")
+        return False
+
