@@ -1,0 +1,22 @@
+# Configurações de ambiente e chaves secretas (NUNCA SUBIR PRO GIT)
+.env
+
+# Ambientes virtuais Python
+venv/
+env/
+ENV/
+.venv/
+
+# Cache de compilação Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Arquivos temporários e logs
+*.log
+/tmp/
+
+# Configurações de IDEs e editores
+.vscode/
+.idea/
+.DS_Store
