@@ -1,4 +1,6 @@
 import os
+import re
+import tempfile
 import uvicorn
 import httpx
 import asyncio
@@ -219,18 +221,21 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
     if not mensagens_raw:
         return
 
-    # Processa áudios pendentes (via Base64 ou URL)
-
+    # Processa áudios pendentes (via Base64 ou URL) com regex robusto
     mensagens_processadas: List[str] = []
     for msg in mensagens_raw:
-        if msg.startswith("[AUDIO_BASE64:") and msg.endswith("]"):
-            base64_data = msg[14:-1]
+        match_b64 = re.search(r'\[AUDIO_BASE64:(.*?)\]', msg, re.DOTALL)
+        match_url = re.search(r'\[AUDIO_URL:(.*?)\]', msg, re.DOTALL)
+
+        if match_b64:
+            base64_data = match_b64.group(1).strip()
+            base64_clean = re.sub(r'\s+', '', base64_data)
             print(f"🎙️ Transcrevendo áudio via Base64 no Whisper...")
             try:
-                temp_path = f"/tmp/audio_{telefone}.ogg"
-                audio_bytes = base64.b64decode(base64_data)
-                with open(temp_path, "wb") as f:
-                    f.write(audio_bytes)
+                with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+                    temp_path = temp_audio.name
+                    audio_bytes = base64.b64decode(base64_clean)
+                    temp_audio.write(audio_bytes)
                 
                 if openai_client:
                     with open(temp_path, "rb") as audio_file:
@@ -246,16 +251,16 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
                 print(f"❌ Erro ao transcrever áudio em Base64: {e}")
                 msg = "[Áudio do paciente que não pôde ser transcrito com clareza]"
 
-        elif msg.startswith("[AUDIO_URL:") and msg.endswith("]"):
-            audio_url = msg[11:-1]
+        elif match_url:
+            audio_url = match_url.group(1).strip()
             print(f"🎙️ Baixando áudio para transcrição no Whisper: {audio_url}")
             try:
                 async with httpx.AsyncClient(timeout=15.0) as http_client:
                     res = await http_client.get(audio_url)
                     if res.status_code == 200:
-                        temp_path = f"/tmp/audio_{telefone}.ogg"
-                        with open(temp_path, "wb") as f:
-                            f.write(res.content)
+                        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+                            temp_path = temp_audio.name
+                            temp_audio.write(res.content)
                         
                         if openai_client:
                             with open(temp_path, "rb") as audio_file:
@@ -270,6 +275,7 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
             except Exception as e:
                 print(f"❌ Erro ao transcrever áudio via Whisper: {e}")
                 msg = "[Áudio do paciente que não pôde ser transcrito com clareza]"
+
         mensagens_processadas.append(msg)
 
     if len(mensagens_processadas) == 1:
