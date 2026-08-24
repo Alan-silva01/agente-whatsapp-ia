@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 import httpx
-from typing import List
+from typing import List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
