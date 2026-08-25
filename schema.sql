@@ -15,6 +15,8 @@ ALTER TABLE clientes ADD COLUMN IF NOT EXISTS email VARCHAR;
 ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cpf VARCHAR;
 ALTER TABLE clientes ADD COLUMN IF NOT EXISTS servico_interesse VARCHAR;
 ALTER TABLE clientes ADD COLUMN IF NOT EXISTS pausado_ate TIMESTAMP WITH TIME ZONE;
+ALTER TABLE clientes ADD COLUMN IF NOT EXISTS status_jornada VARCHAR DEFAULT 'novo';
+
 
 
 -- 2. Tabela de Agendamentos (Consultas da Clínica)

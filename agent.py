@@ -13,8 +13,12 @@ from database import (
     carregar_historico,
     pausar_agente
 )
-from prompts.bianca_prompt import obter_system_prompt_bianca
-from tools.clinic_tools import TOOLS
+from agents.router import classificar_agente_destinatario
+from prompts.agendador_prompt import obter_system_prompt_agendador
+from prompts.duvidas_prompt import obter_system_prompt_duvidas
+from prompts.financeiro_prompt import obter_system_prompt_financeiro
+from prompts.suporte_prompt import obter_system_prompt_suporte
+from tools.clinic_tools import obter_tools_por_agente
 
 load_dotenv()
 
@@ -126,7 +130,8 @@ def formatar_conteudo_multimodal(texto: str) -> Any:
 
 async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str) -> str:
     """
-    Processa a mensagem com o prompt oficial da Bianca (Odonto Clínica Londrina) + Supabase Tools + Visão GPT-4o-mini.
+    Orquestrador Multi-Agentes: Roteia a mensagem para o agente especialista ideal
+    (Tira-Dúvidas, Agendamento, Pós-Agendamento, Financeiro ou Suporte/Transbordo).
     """
     telefone = str(cliente.get("telefone", ""))
     push_name = str(cliente.get("push_name", "Desconhecido"))
@@ -134,6 +139,7 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
     email = cliente.get("email")
     cpf = cliente.get("cpf")
     servico_interesse = cliente.get("servico_interesse")
+    status_jornada = str(cliente.get("status_jornada", "novo"))
 
     if not client:
         return "OPENAI_API_KEY não configurada no arquivo .env!"
@@ -146,27 +152,50 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
     agora_iso = datetime.now().isoformat()
     dados_cliente_str = f"Nome: {nome_real or 'SEM CADASTRO'}, Email: {email or 'SEM EMAIL'}, CPF: {cpf or 'SEM CPF'}, Serviço: {servico_interesse or 'Nenhum'}" if (nome_real or email or cpf) else "SEM CADASTRO"
 
-    # Carrega prompt limpo do módulo prompts
-    system_prompt = obter_system_prompt_bianca(agora_iso, telefone, dados_cliente_str)
+    # 1. Roteador de Atendimento
+    agente_escolhido = classificar_agente_destinatario(
+        client=client,
+        model=OPENAI_MODEL,
+        cliente=cliente,
+        texto_usuario=texto_limpo_banco,
+        agora_iso=agora_iso
+    )
+
+    # 2. Carrega o System Prompt do Agente Especialista Selecionado
+    if agente_escolhido in ["AGENDAMENTO", "POS_AGENDAMENTO"]:
+        system_prompt = obter_system_prompt_agendador(agora_iso, telefone, status_jornada, dados_cliente_str)
+    elif agente_escolhido == "DUVIDAS":
+        system_prompt = obter_system_prompt_duvidas(agora_iso, telefone, dados_cliente_str)
+    elif agente_escolhido == "FINANCEIRO":
+        system_prompt = obter_system_prompt_financeiro(agora_iso, telefone, dados_cliente_str)
+    elif agente_escolhido == "SUPORTE":
+        system_prompt = obter_system_prompt_suporte(agora_iso, telefone, dados_cliente_str)
+    else:
+        system_prompt = obter_system_prompt_agendador(agora_iso, telefone, status_jornada, dados_cliente_str)
+
+    # 3. Carrega o subconjunto de ferramentas para este agente
+    tools = obter_tools_por_agente(agente_escolhido)
 
     messages: List[Any] = [{"role": "system", "content": system_prompt}]
     for msg in historico:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # Se a mensagem atual do usuário contiver marcadores de imagem, injeta no último item (user)
+    # Se a mensagem atual contiver foto, injeta o formato multimodal de imagem
     if "[IMAGE_BASE64:" in texto_usuario or "[IMAGE_URL:" in texto_usuario:
         if messages and messages[-1]["role"] == "user":
             messages[-1]["content"] = formatar_conteudo_multimodal(texto_usuario)
 
-    print(f"🧠 Enviando prompt da Bianca para GPT-4o-mini ({telefone})...")
+    print(f"🤖 Agente Ativo: '{agente_escolhido}' processando mensagem de {telefone}...")
     try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto"
-        )
+        kwargs: Dict[str, Any] = {
+            "model": OPENAI_MODEL,
+            "messages": messages
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
 
+        response = client.chat.completions.create(**kwargs)
         resposta_mensagem = response.choices[0].message
 
         # Trata execução de chamadas de ferramentas (Tools)
@@ -178,7 +207,7 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
                 fn_name = getattr(fn_obj, "name", "") if fn_obj else ""
                 args_str = getattr(fn_obj, "arguments", "{}") if fn_obj else "{}"
                 args = json.loads(args_str or "{}")
-                print(f"🛠️ Tool chamada: {fn_name} com args {args}")
+                print(f"🛠️ Tool chamada por [{agente_escolhido}]: {fn_name} com args {args}")
 
                 resultado: Dict[str, Any] = {}
                 if fn_name == "atualizar_cadastro_paciente":
@@ -243,6 +272,7 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
         return texto_final_sem_emoji
 
     except Exception as e:
-        print(f"❌ Erro na OpenAI API: {e}")
+        print(f"❌ Erro na OpenAI API ({agente_escolhido}): {e}")
         return "Tive um probleminha técnico por um momento. Pode repetir por favor?"
+
 

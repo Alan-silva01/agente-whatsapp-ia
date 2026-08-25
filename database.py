@@ -39,7 +39,8 @@ def obter_ou_criar_cliente(telefone: str, push_name: str = "Desconhecido") -> Di
     novo_cliente: Dict[str, Any] = {
         "telefone": telefone,
         "push_name": push_name,
-        "nome_real": None
+        "nome_real": None,
+        "status_jornada": "novo"
     }
     insercao = supabase.table("clientes").insert(novo_cliente).execute()
     print(f"✨ Novo cliente cadastrado no Supabase: {telefone} (pushName: {push_name})")
@@ -121,12 +122,31 @@ def criar_agendamento(telefone: str, nome_paciente: str, servico: str, profissio
         }
         res = supabase.table("agendamentos").insert(novo).execute()
         print(f"✅ AGENDAMENTO CRIADO NO SUPABASE: {novo}")
+        
+        # Atualiza a jornada do cliente automaticamente para pos_agendamento
+        atualizar_status_jornada(telefone, "pos_agendamento")
+
         if res.data and isinstance(res.data, list) and len(res.data) > 0:
             return {"status": "sucesso", "agendamento": res.data[0]}
         return {"status": "sucesso", "agendamento": novo}
     except Exception as e:
         print(f"❌ Erro ao criar agendamento no Supabase: {e}")
         return {"status": "erro", "detalhe": str(e)}
+
+def atualizar_status_jornada(telefone: str, status_jornada: str) -> bool:
+    """
+    Atualiza a fase da jornada do cliente no Supabase (ex: 'novo', 'pos_agendamento').
+    """
+    if not supabase or not telefone:
+        return True
+    try:
+        telefone_limpo = str(telefone).split("@")[0].strip()
+        supabase.table("clientes").update({"status_jornada": status_jornada}).eq("telefone", telefone_limpo).execute()
+        print(f"🔄 Status da jornada do cliente {telefone_limpo} atualizado para '{status_jornada}'")
+        return True
+    except Exception as e:
+        print(f"❌ Erro ao atualizar status_jornada no Supabase: {e}")
+        return False
 
 def cancelar_ou_reagendar_agendamento(telefone: str, acao: str, nova_data_hora_iso: Optional[str] = None, motivo: Optional[str] = None) -> Dict[str, Any]:
     """

@@ -80,3 +80,17 @@ TOOLS: List[Any] = [
         }
     }
 ]
+
+TOOLS_AGENDAMENTO = [TOOLS[0], TOOLS[1], TOOLS[2], TOOLS[3], TOOLS[4]]
+TOOLS_SUPORTE = [TOOLS[4]]
+
+def obter_tools_por_agente(tipo_agente: str) -> List[Any]:
+    """
+    Retorna apenas o subconjunto de ferramentas que o agente específico necessita.
+    """
+    if tipo_agente in ["AGENDAMENTO", "POS_AGENDAMENTO"]:
+        return TOOLS_AGENDAMENTO
+    elif tipo_agente == "SUPORTE":
+        return TOOLS_SUPORTE
+    return []
+
