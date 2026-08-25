@@ -1,6 +1,8 @@
 import os
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
+sp_tz = ZoneInfo("America/Sao_Paulo")
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -149,7 +151,7 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
     salvar_mensagem(telefone, "user", texto_limpo_banco)
     historico = carregar_historico(telefone, limite=12)
 
-    agora_iso = datetime.now().isoformat()
+    agora_iso = datetime.now(sp_tz).isoformat()
     dados_cliente_str = f"Nome: {nome_real or 'SEM CADASTRO'}, Email: {email or 'SEM EMAIL'}, CPF: {cpf or 'SEM CPF'}, Serviço: {servico_interesse or 'Nenhum'}" if (nome_real or email or cpf) else "SEM CADASTRO"
 
     # 1. Roteador de Atendimento
@@ -158,7 +160,8 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
         model=OPENAI_MODEL,
         cliente=cliente,
         texto_usuario=texto_limpo_banco,
-        agora_iso=agora_iso
+        agora_iso=agora_iso,
+        historico=historico
     )
 
     # 2. Carrega o System Prompt do Agente Especialista Selecionado
@@ -187,15 +190,21 @@ async def processar_mensagem_agente(cliente: Dict[str, Any], texto_usuario: str)
 
     print(f"🤖 Agente Ativo: '{agente_escolhido}' processando mensagem de {telefone}...")
     try:
-        kwargs: Dict[str, Any] = {
-            "model": OPENAI_MODEL,
-            "messages": messages
-        }
         if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                stream=False
+            )
+        else:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                stream=False
+            )
 
-        response = client.chat.completions.create(**kwargs)
         resposta_mensagem = response.choices[0].message
 
         # Trata execução de chamadas de ferramentas (Tools)

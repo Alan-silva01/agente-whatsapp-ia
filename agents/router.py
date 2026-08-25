@@ -1,11 +1,18 @@
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from openai import OpenAI
 from prompts.router_prompt import obter_system_prompt_router
 
-def classificar_agente_destinatario(client: OpenAI, model: str, cliente: Dict[str, Any], texto_usuario: str, agora_iso: str) -> str:
+def classificar_agente_destinatario(
+    client: OpenAI,
+    model: str,
+    cliente: Dict[str, Any],
+    texto_usuario: str,
+    agora_iso: str,
+    historico: Optional[List[Dict[str, Any]]] = None
+) -> str:
     """
-    Roteador Inteligente: analisa o estado do cliente e o texto para determinar qual o Agente Especialista ideal.
+    Roteador Inteligente: analisa o estado do cliente, histórico recente e o texto para determinar qual o Agente Especialista ideal.
     Retorna uma das opções: "POS_AGENDAMENTO", "FINANCEIRO", "DUVIDAS", "AGENDAMENTO", "SUPORTE".
     """
     telefone = str(cliente.get("telefone", ""))
@@ -26,13 +33,18 @@ def classificar_agente_destinatario(client: OpenAI, model: str, cliente: Dict[st
 
     prompt = obter_system_prompt_router(agora_iso, telefone, status_jornada, dados_cliente_str)
 
+    messages: List[Any] = [{"role": "system", "content": prompt}]
+    if historico:
+        # Inclui até as 4 mensagens mais recentes do histórico para dar contexto completo de diálogos (ex: confirmações de 'Sim')
+        for msg in historico[-4:]:
+            messages.append({"role": msg.get("role", "user"), "content": str(msg.get("content", ""))})
+    else:
+        messages.append({"role": "user", "content": texto_usuario})
+
     try:
         res = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": texto_usuario}
-            ],
+            messages=messages,
             temperature=0.0,
             response_format={"type": "json_object"}
         )

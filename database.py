@@ -1,9 +1,24 @@
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from evolution import enviar_mensagem_whatsapp
+
+sp_tz = ZoneInfo("America/Sao_Paulo")
+
+def normalizar_data_hora_sp(data_hora_iso: str) -> str:
+    """
+    Garante que a string ISO possua o sufixo de fuso horário de São Paulo (-03:00)
+    caso a IA envie uma data sem timezone explicito.
+    """
+    if not data_hora_iso:
+        return data_hora_iso
+    data_hora_str = str(data_hora_iso).strip()
+    if len(data_hora_str) >= 10 and not ("+" in data_hora_str or "-" in data_hora_str[10:] or data_hora_str.endswith("Z")):
+        data_hora_str += "-03:00"
+    return data_hora_str
 
 
 
@@ -103,7 +118,8 @@ def consultar_disponibilidade_horario(data_hora_iso: str, profissional: Optional
         return {"disponivel": True, "mensagem": "Horário disponível"}
     
     try:
-        query = supabase.table("agendamentos").select("*").eq("data_hora", data_hora_iso).neq("status", "cancelado")
+        data_hora_norm = normalizar_data_hora_sp(data_hora_iso)
+        query = supabase.table("agendamentos").select("*").eq("data_hora", data_hora_norm).neq("status", "cancelado")
         if profissional:
             query = query.eq("profissional", profissional)
             
@@ -131,12 +147,13 @@ def criar_agendamento(telefone: str, nome_paciente: str, servico: str, profissio
         return {"status": "sucesso", "agendamento_id": "simulado"}
     
     try:
+        data_hora_norm = normalizar_data_hora_sp(data_hora_iso)
         novo: Dict[str, Any] = {
             "telefone": telefone,
             "nome_paciente": nome_paciente,
             "servico": servico,
             "profissional": profissional or "Dra. Karen",
-            "data_hora": data_hora_iso,
+            "data_hora": data_hora_norm,
             "status": "agendado"
         }
         res = supabase.table("agendamentos").insert(novo).execute()
@@ -261,9 +278,9 @@ def pausar_agente(telefone: str, minutos: int = 5) -> bool:
         # Garante que a linha do cliente existe na tabela clientes antes de atualizar
         obter_ou_criar_cliente(telefone=telefone_limpo)
         
-        pausado_ate_iso = (datetime.now(timezone.utc) + timedelta(minutes=minutos)).isoformat()
-        supabase.table("clientes").update({"pausado_ate": pausado_ate_iso}).eq("telefone", telefone_limpo).execute()
-        print(f"⏸️ IA PAUSADA por {minutos} min para {telefone_limpo} (Até {pausado_ate_iso})")
+        pausado_ate_sp = (datetime.now(sp_tz) + timedelta(minutes=minutos)).isoformat()
+        supabase.table("clientes").update({"pausado_ate": pausado_ate_sp}).eq("telefone", telefone_limpo).execute()
+        print(f"⏸️ IA PAUSADA por {minutos} min para {telefone_limpo} (Até {pausado_ate_sp})")
         return True
     except Exception as e:
         print(f"❌ Erro ao pausar agente no Supabase: {e}")
@@ -285,18 +302,12 @@ def agente_esta_pausado(telefone: str) -> bool:
             cliente = res.data[0]
             if isinstance(cliente, dict):
                 pausado_ate_val = cliente.get("pausado_ate")
-                if pausado_ate_val:
-                    if isinstance(pausado_ate_val, str):
-                        pausado_ate_dt = datetime.fromisoformat(pausado_ate_val.replace("Z", "+00:00"))
-                    elif isinstance(pausado_ate_val, datetime):
-                        pausado_ate_dt = pausado_ate_val
-                    else:
-                        return False
-
+                if pausado_ate_val and isinstance(pausado_ate_val, str):
+                    pausado_ate_dt = datetime.fromisoformat(pausado_ate_val.replace("Z", "+00:00"))
                     if pausado_ate_dt.tzinfo is None:
                         pausado_ate_dt = pausado_ate_dt.replace(tzinfo=timezone.utc)
 
-                    agora_dt = datetime.now(timezone.utc)
+                    agora_dt = datetime.now(sp_tz)
                     if agora_dt < pausado_ate_dt:
                         restante_seg = int((pausado_ate_dt - agora_dt).total_seconds())
                         print(f"⏸️ Atendimento IA pausado para {telefone_limpo} (restam {restante_seg}s)")
@@ -315,7 +326,7 @@ async def processar_lembretes_2h_antes() -> Dict[str, Any]:
     if not supabase:
         return {"status": "erro", "mensagem": "Supabase não configurado"}
 
-    agora = datetime.now(timezone.utc)
+    agora = datetime.now(sp_tz)
     inicio_janela = agora + timedelta(minutes=105)
     fim_janela = agora + timedelta(minutes=150)
 
@@ -357,7 +368,8 @@ async def processar_lembretes_2h_antes() -> Dict[str, Any]:
                     telefone = str(ag.get("telefone") or "")
                     nome_paciente = str(ag.get("nome_paciente") or "Paciente")
                     profissional = str(ag.get("profissional") or "Dra. Karen")
-                    horario_formatado = data_hora_dt.strftime("%H:%M")
+                    data_hora_sp = data_hora_dt.astimezone(sp_tz)
+                    horario_formatado = data_hora_sp.strftime("%H:%M")
 
                     msg_lembrete = f"Oi {nome_paciente}! Passando para lembrar que sua consulta na Odonto Clínica Londrina é hoje às {horario_formatado} com a {profissional}. Você confirma sua presença?"
                     

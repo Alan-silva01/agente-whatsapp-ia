@@ -140,10 +140,11 @@ def extrair_dados_mensagem(payload: dict):
 
         # Extrai mensagem citada/mencionada (quotedMessage) se existir
         context_info = None
-        if "extendedTextMessage" in message_obj and isinstance(message_obj["extendedTextMessage"], dict):
-            context_info = message_obj["extendedTextMessage"].get("contextInfo")
-        elif "contextInfo" in message_obj:
-            context_info = message_obj.get("contextInfo")
+        if isinstance(message_obj, dict):
+            if "extendedTextMessage" in message_obj and isinstance(message_obj["extendedTextMessage"], dict):
+                context_info = message_obj["extendedTextMessage"].get("contextInfo")
+            elif "contextInfo" in message_obj:
+                context_info = message_obj.get("contextInfo")
             
         if context_info and isinstance(context_info, dict):
             quoted_msg = context_info.get("quotedMessage")
