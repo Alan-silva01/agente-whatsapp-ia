@@ -354,9 +354,9 @@ async def processar_lembretes_2h_antes() -> Dict[str, Any]:
 
                 # Verifica se a consulta está dentro da janela de ~2 horas a partir de agora
                 if inicio_janela <= data_hora_dt <= fim_janela:
-                    telefone = ag.get("telefone", "")
-                    nome_paciente = ag.get("nome_paciente", "Paciente")
-                    profissional = ag.get("profissional", "Dra. Karen")
+                    telefone = str(ag.get("telefone") or "")
+                    nome_paciente = str(ag.get("nome_paciente") or "Paciente")
+                    profissional = str(ag.get("profissional") or "Dra. Karen")
                     horario_formatado = data_hora_dt.strftime("%H:%M")
 
                     msg_lembrete = f"Oi {nome_paciente}! Passando para lembrar que sua consulta na Odonto Clínica Londrina é hoje às {horario_formatado} com a {profissional}. Você confirma sua presença?"

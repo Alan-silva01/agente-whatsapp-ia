@@ -245,10 +245,17 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
             key_list = f"whatsapp_agent:buffer:{telefone}"
             key_meta = f"whatsapp_agent:meta:{telefone}"
 
-            mensagens_raw = await redis_client.lrange(key_list, 0, -1)
+            raw_mensagens = await redis_client.lrange(key_list, 0, -1)
+            mensagens_raw = [
+                m.decode("utf-8") if isinstance(m, bytes) else str(m)
+                for m in raw_mensagens
+            ]
+
             meta = await redis_client.hgetall(key_meta)
-            if meta and "push_name" in meta:
-                push_name = meta["push_name"]
+            if meta:
+                val = meta.get("push_name") or meta.get(b"push_name")
+                if val:
+                    push_name = val.decode("utf-8") if isinstance(val, bytes) else str(val)
 
             await redis_client.delete(key_list, key_meta)
         except Exception as e:
@@ -256,12 +263,14 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
             dados_mem = BUFFER_MENSAGENS.pop(telefone, None)
             if dados_mem:
                 mensagens_raw = dados_mem.get("mensagens", [])
-                push_name = dados_mem.get("push_name", "Desconhecido")
+                val_mem = dados_mem.get("push_name", "Desconhecido")
+                push_name = val_mem.decode("utf-8") if isinstance(val_mem, bytes) else str(val_mem)
     else:
         dados_mem = BUFFER_MENSAGENS.pop(telefone, None)
         if dados_mem:
             mensagens_raw = dados_mem.get("mensagens", [])
-            push_name = dados_mem.get("push_name", "Desconhecido")
+            val_mem = dados_mem.get("push_name", "Desconhecido")
+            push_name = val_mem.decode("utf-8") if isinstance(val_mem, bytes) else str(val_mem)
 
     if not mensagens_raw:
         return
