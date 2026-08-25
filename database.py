@@ -187,7 +187,9 @@ def cancelar_ou_reagendar_agendamento(telefone: str, acao: str, nova_data_hora_i
         
         if acao.lower() == "cancelar":
             supabase.table("agendamentos").update({"status": "cancelado"}).eq("id", agendamento_id).execute()
-            return {"status": "sucesso", "mensagem": "Agendamento cancelado com sucesso."}
+            # Reseta a jornada do cliente para 'novo'
+            atualizar_status_jornada(telefone, "novo")
+            return {"status": "sucesso", "mensagem": "Agendamento cancelado com sucesso. A jornada do cliente foi resetada para 'novo'."}
         elif acao.lower() == "reagendar" and nova_data_hora_iso:
             supabase.table("agendamentos").update({"status": "reagendado", "data_hora": nova_data_hora_iso}).eq("id", agendamento_id).execute()
             return {"status": "sucesso", "mensagem": f"Agendamento reagendado com sucesso para {nova_data_hora_iso}."}
@@ -301,5 +303,82 @@ def agente_esta_pausado(telefone: str) -> bool:
     except Exception as e:
         print(f"⚠️ Erro ao checar status de pausa no Supabase: {e}")
         return False
+
+
+async def processar_lembretes_2h_antes() -> Dict[str, Any]:
+    """
+    Busca agendamentos marcados para daqui a 2 horas (janela entre 105 e 150 minutos a partir de agora)
+    e dispara a mensagem de lembrete no WhatsApp via Evolution API.
+    """
+    if not supabase:
+        return {"status": "erro", "mensagem": "Supabase não configurado"}
+        
+    from datetime import datetime, timedelta, timezone
+    from evolution import enviar_mensagem_whatsapp
+
+    agora = datetime.now(timezone.utc)
+    inicio_janela = agora + timedelta(minutes=105)
+    fim_janela = agora + timedelta(minutes=150)
+
+    disparados = 0
+    erros = 0
+
+    try:
+        # Busca agendamentos ativos
+        res = supabase.table("agendamentos").select("*").neq("status", "cancelado").execute()
+        if not res.data or not isinstance(res.data, list):
+            return {"status": "sucesso", "disparados": 0}
+
+        for ag in res.data:
+            if not isinstance(ag, dict):
+                continue
+                
+            lembrete_enviado = ag.get("lembrete_enviado", False)
+            if lembrete_enviado:
+                continue
+
+            data_hora_str = ag.get("data_hora")
+            if not data_hora_str:
+                continue
+
+            try:
+                if isinstance(data_hora_str, str):
+                    data_hora_dt = datetime.fromisoformat(data_hora_str.replace("Z", "+00:00"))
+                elif isinstance(data_hora_str, datetime):
+                    data_hora_dt = data_hora_str
+                else:
+                    continue
+
+                if data_hora_dt.tzinfo is None:
+                    data_hora_dt = data_hora_dt.replace(tzinfo=timezone.utc)
+
+                # Verifica se a consulta está dentro da janela de ~2 horas a partir de agora
+                if inicio_janela <= data_hora_dt <= fim_janela:
+                    telefone = ag.get("telefone", "")
+                    nome_paciente = ag.get("nome_paciente", "Paciente")
+                    profissional = ag.get("profissional", "Dra. Karen")
+                    horario_formatado = data_hora_dt.strftime("%H:%M")
+
+                    msg_lembrete = f"Oi {nome_paciente}! Passando para lembrar que sua consulta na Odonto Clínica Londrina é hoje às {horario_formatado} com a {profissional}. Você confirma sua presença?"
+                    
+                    # Dispara via WhatsApp
+                    sucesso = await enviar_mensagem_whatsapp(telefone, msg_lembrete)
+                    if sucesso:
+                        try:
+                            supabase.table("agendamentos").update({"lembrete_enviado": True}).eq("id", ag.get("id")).execute()
+                        except Exception:
+                            pass
+                        disparados += 1
+                        print(f"🔔 Lembrete 2h enviado com sucesso para {telefone} ({horario_formatado})")
+                    else:
+                        erros += 1
+            except Exception as e_item:
+                print(f"⚠️ Erro ao processar item de lembrete: {e_item}")
+
+        return {"status": "sucesso", "disparados": disparados, "erros": erros}
+    except Exception as e:
+        print(f"❌ Erro ao buscar lembretes no Supabase: {e}")
+        return {"status": "erro", "detalhe": str(e)}
+
 
 

@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, Request, BackgroundTasks
 import redis.asyncio as redis
 from dotenv import load_dotenv
-from database import obter_ou_criar_cliente, pausar_agente, agente_esta_pausado
+from database import obter_ou_criar_cliente, pausar_agente, agente_esta_pausado, processar_lembretes_2h_antes
 from agent import processar_mensagem_agente, client as openai_client
 from evolution import enviar_mensagem_whatsapp, enviar_mensagens_fracionadas_com_digitacao, obter_media_base64_evolution, EVOLUTION_API_KEY
 
@@ -398,6 +398,17 @@ async def webhook_whatsapp(request: Request):
 @app.get("/")
 def home():
     return {"status": "ok", "mensagem": "Agente WhatsApp rodando com sucesso!"}
+
+
+@app.api_route("/api/cron/lembretes", methods=["GET", "POST"])
+async def trigger_cron_lembretes():
+    """
+    Endpoint acionado pelo Supabase pg_cron, cron-job.org ou webhook
+    para disparar lembretes de consultas 2h antes.
+    """
+    resultado = await processar_lembretes_2h_antes()
+    return resultado
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)

@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS agendamentos (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+ALTER TABLE agendamentos ADD COLUMN IF NOT EXISTS lembrete_enviado BOOLEAN DEFAULT false;
+
+
 -- 3. Tabela de Histórico de Mensagens
 CREATE TABLE IF NOT EXISTS historico_conversas (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
