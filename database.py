@@ -21,32 +21,49 @@ def obter_ou_criar_cliente(telefone: str, push_name: str = "Desconhecido") -> Di
     Se não existir, cria o cliente com o push_name do WhatsApp.
     """
     if not supabase:
-        return {"telefone": telefone, "push_name": push_name, "nome_real": None}
+        return {"telefone": telefone, "push_name": push_name, "nome_real": None, "status_jornada": "novo"}
     
-    # 1. Tenta buscar o cliente existente
-    resposta = supabase.table("clientes").select("*").eq("telefone", telefone).execute()
+    telefone_limpo = str(telefone).split("@")[0].strip()
     
-    if resposta.data and isinstance(resposta.data, list) and len(resposta.data) > 0:
-        cliente = resposta.data[0]
-        if isinstance(cliente, dict):
-            # Se veio um push_name novo e o atual for nulo ou 'Desconhecido', atualiza
-            if push_name and push_name != "Desconhecido" and cliente.get("push_name") != push_name:
-                supabase.table("clientes").update({"push_name": push_name}).eq("telefone", telefone).execute()
-                cliente["push_name"] = push_name
-            return cliente
-    
-    # 2. Se não encontrou, insere novo cliente
-    novo_cliente: Dict[str, Any] = {
-        "telefone": telefone,
-        "push_name": push_name,
-        "nome_real": None,
-        "status_jornada": "novo"
-    }
-    insercao = supabase.table("clientes").insert(novo_cliente).execute()
-    print(f"✨ Novo cliente cadastrado no Supabase: {telefone} (pushName: {push_name})")
-    if insercao.data and isinstance(insercao.data, list) and len(insercao.data) > 0 and isinstance(insercao.data[0], dict):
-        return insercao.data[0]
-    return novo_cliente
+    try:
+        # 1. Tenta buscar o cliente existente
+        resposta = supabase.table("clientes").select("*").eq("telefone", telefone_limpo).execute()
+        
+        if resposta.data and isinstance(resposta.data, list) and len(resposta.data) > 0:
+            cliente = resposta.data[0]
+            if isinstance(cliente, dict):
+                if push_name and push_name != "Desconhecido" and cliente.get("push_name") != push_name:
+                    try:
+                        supabase.table("clientes").update({"push_name": push_name}).eq("telefone", telefone_limpo).execute()
+                    except Exception:
+                        pass
+                    cliente["push_name"] = push_name
+                return cliente
+        
+        # 2. Se não encontrou, insere novo cliente
+        novo_cliente: Dict[str, Any] = {
+            "telefone": telefone_limpo,
+            "push_name": push_name,
+            "nome_real": None
+        }
+        try:
+            novo_cliente_full = {**novo_cliente, "status_jornada": "novo"}
+            insercao = supabase.table("clientes").insert(novo_cliente_full).execute()
+            print(f"✨ Novo cliente cadastrado no Supabase: {telefone_limpo} (pushName: {push_name})")
+            if insercao.data and isinstance(insercao.data, list) and len(insercao.data) > 0 and isinstance(insercao.data[0], dict):
+                return insercao.data[0]
+        except Exception as e:
+            # Fallback sem status_jornada se o cache da API do Supabase estiver sendo atualizado
+            insercao = supabase.table("clientes").insert(novo_cliente).execute()
+            print(f"✨ Novo cliente cadastrado no Supabase (fallback): {telefone_limpo}")
+            if insercao.data and isinstance(insercao.data, list) and len(insercao.data) > 0 and isinstance(insercao.data[0], dict):
+                return insercao.data[0]
+
+        return novo_cliente
+    except Exception as e:
+        print(f"⚠️ Erro ao obter/criar cliente no Supabase: {e}")
+        return {"telefone": telefone_limpo, "push_name": push_name, "nome_real": None, "status_jornada": "novo"}
+
 
 def atualizar_dados_paciente(telefone: str, nome_real: Optional[str] = None, email: Optional[str] = None, cpf: Optional[str] = None, servico_interesse: Optional[str] = None) -> bool:
     """
@@ -252,25 +269,37 @@ def pausar_agente(telefone: str, minutos: int = 5) -> bool:
 def agente_esta_pausado(telefone: str) -> bool:
     """
     Verifica se a IA está pausada para o número informado no Supabase (se agora < pausado_ate).
+    Suporta tanto strings ISO quanto objetos datetime retornados pelo SDK do Supabase.
     """
     if not supabase or not telefone:
         return False
         
     try:
-        res = supabase.table("clientes").select("pausado_ate").eq("telefone", telefone).execute()
+        telefone_limpo = str(telefone).split("@")[0].strip()
+        res = supabase.table("clientes").select("pausado_ate").eq("telefone", telefone_limpo).execute()
         if res.data and isinstance(res.data, list) and len(res.data) > 0:
             cliente = res.data[0]
             if isinstance(cliente, dict):
-                pausado_ate_str = cliente.get("pausado_ate")
-                if pausado_ate_str:
-                    pausado_ate_dt = datetime.fromisoformat(pausado_ate_str.replace("Z", "+00:00"))
+                pausado_ate_val = cliente.get("pausado_ate")
+                if pausado_ate_val:
+                    if isinstance(pausado_ate_val, str):
+                        pausado_ate_dt = datetime.fromisoformat(pausado_ate_val.replace("Z", "+00:00"))
+                    elif isinstance(pausado_ate_val, datetime):
+                        pausado_ate_dt = pausado_ate_val
+                    else:
+                        return False
+
+                    if pausado_ate_dt.tzinfo is None:
+                        pausado_ate_dt = pausado_ate_dt.replace(tzinfo=timezone.utc)
+
                     agora_dt = datetime.now(timezone.utc)
                     if agora_dt < pausado_ate_dt:
                         restante_seg = int((pausado_ate_dt - agora_dt).total_seconds())
-                        print(f"⏸️ Atendimento IA pausado para {telefone} (restam {restante_seg}s)")
+                        print(f"⏸️ Atendimento IA pausado para {telefone_limpo} (restam {restante_seg}s)")
                         return True
         return False
     except Exception as e:
         print(f"⚠️ Erro ao checar status de pausa no Supabase: {e}")
         return False
+
 
