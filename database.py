@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from evolution import enviar_mensagem_whatsapp
+
 
 
 load_dotenv()
@@ -312,13 +314,11 @@ async def processar_lembretes_2h_antes() -> Dict[str, Any]:
     """
     if not supabase:
         return {"status": "erro", "mensagem": "Supabase não configurado"}
-        
-    from datetime import datetime, timedelta, timezone
-    from evolution import enviar_mensagem_whatsapp
 
     agora = datetime.now(timezone.utc)
     inicio_janela = agora + timedelta(minutes=105)
     fim_janela = agora + timedelta(minutes=150)
+
 
     disparados = 0
     erros = 0

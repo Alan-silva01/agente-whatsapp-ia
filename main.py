@@ -240,7 +240,7 @@ async def aguardar_e_processar_buffer(telefone: str, delay_segundos: float = 15.
     push_name = "Desconhecido"
     mensagens_raw: List[str] = []
 
-    if redis_client:
+    if redis_client is not None:
         try:
             key_list = f"whatsapp_agent:buffer:{telefone}"
             key_meta = f"whatsapp_agent:meta:{telefone}"
